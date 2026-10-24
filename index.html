@@ -111,12 +111,26 @@
           Continue checking operation
         </button>
         <button id="receive-mp4-bytes" type="button" hidden disabled>Receive MP4 bytes</button>
+        <button id="open-prepared-mp4" type="button" hidden disabled>Open Prepared MP4</button>
         <button id="save-mp4" type="button" hidden disabled>Save MP4</button>
+        <p id="prepared-navigation-status" role="status">No prepared destination</p>
         <button id="reset-proof" type="button">Reset proof</button>
         <dl>
           <div>
             <dt>Preparation</dt>
             <dd id="mp4-operation-status">Not prepared</dd>
+          </div>
+          <div>
+            <dt>prepared_uri_present</dt>
+            <dd id="prepared-uri-present">No</dd>
+          </div>
+          <div>
+            <dt>prepared_uri_validated</dt>
+            <dd id="prepared-uri-validated">No</dd>
+          </div>
+          <div>
+            <dt>resource_key_present</dt>
+            <dd id="resource-key-present">No</dd>
           </div>
           <div>
             <dt>Bytes received</dt>
