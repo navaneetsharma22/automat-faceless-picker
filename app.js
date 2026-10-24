@@ -4,14 +4,18 @@ import {
   classifyDriveApiFailure,
   classifyDownloadHttpFailure,
   classifyDriveDownloadFailure,
+  canOpenPreparedDownloadInBrowser,
   createMp4PreparationFlow,
   createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
   buildFilesDownloadUrl,
+  buildDriveResourceKeysHeader,
   buildOperationGetUrl,
+  evaluateDownloadOperation,
   evaluateMp4BytesResponse,
   evaluateVidsMetadata,
   getPickerViewConfiguration,
+  getPreparedDownloadDiagnostics,
   hasRequestedScope,
   PICKER_MODE_ALL_TYPES_DIAGNOSTIC,
   PICKER_MODE_VIDS_ONLY,
@@ -50,6 +54,8 @@ let pickerCallbackDiagnosticCount = 0;
 let selectedProof;
 let preparationFlow;
 let downloadUriInMemory;
+let downloadResourceKeyInMemory;
+let downloadResourceKeyPresentInMemory = false;
 let downloadBlobInMemory;
 let preparationBusy = false;
 let preparationAttempted = false;
@@ -145,6 +151,35 @@ function setText(selector, value) {
 
 function setAuthorizationStatus(value) {
   setText('#authorization-status', value);
+}
+
+function updatePreparedDownloadDiagnostics() {
+  const diagnostics = getPreparedDownloadDiagnostics(
+    downloadUriInMemory,
+    downloadResourceKeyInMemory || selectedProof?.resourceKey,
+    downloadResourceKeyPresentInMemory || selectedProof?.resourceKeyPresent,
+  );
+  setText('#prepared-uri-present', diagnostics.prepared_uri_present ? 'Yes' : 'No');
+  setText('#prepared-uri-validated', diagnostics.prepared_uri_validated ? 'Yes' : 'No');
+  setText('#resource-key-present', diagnostics.resource_key_present ? 'Yes' : 'No');
+
+  const button = document.querySelector('#open-prepared-mp4');
+  const eligible = canOpenPreparedDownloadInBrowser(diagnostics);
+  button.hidden = !eligible;
+  button.disabled = !eligible;
+  if (diagnostics.resource_key_present) {
+    setText(
+      '#prepared-navigation-status',
+      'Browser navigation unavailable: the final request requires X-Goog-Drive-Resource-Keys, which a normal link cannot attach safely.',
+    );
+  } else if (eligible) {
+    setText(
+      '#prepared-navigation-status',
+      'Ready for an explicit browser navigation. The page will report only that navigation was initiated.',
+    );
+  } else {
+    setText('#prepared-navigation-status', 'No prepared destination');
+  }
 }
 
 function setSelectionStatus(key) {
@@ -412,8 +447,13 @@ async function driveJsonRequest(url, method, token, resourceKey) {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
-        ...(resourceKey && method === 'POST'
-          ? { 'X-Goog-Drive-Resource-Keys': `${selectedProof.fileId}/${resourceKey}` }
+        ...(buildDriveResourceKeysHeader(selectedProof.fileId, resourceKey)
+          ? {
+              'X-Goog-Drive-Resource-Keys': buildDriveResourceKeysHeader(
+                selectedProof.fileId,
+                resourceKey,
+              ),
+            }
           : {}),
       },
       cache: 'no-store',
@@ -448,20 +488,42 @@ async function driveJsonRequest(url, method, token, resourceKey) {
 
 function createPreparationFlow() {
   return createMp4PreparationFlow({
-    startDownload: (fileId) =>
-      driveJsonRequest(
+    startDownload: async (fileId) => {
+      const result = await driveJsonRequest(
         buildFilesDownloadUrl(fileId),
         'POST',
         accessTokenInMemory,
-        selectedProof?.resourceKey,
-      ),
-    pollOperation: (operationName) =>
-      driveJsonRequest(
+        downloadResourceKeyInMemory || selectedProof?.resourceKey,
+      );
+      if (result.ok) {
+        const operation = evaluateDownloadOperation(result.operation);
+        downloadResourceKeyInMemory =
+          operation.resourceKey || downloadResourceKeyInMemory || selectedProof?.resourceKey;
+        downloadResourceKeyPresentInMemory =
+          downloadResourceKeyPresentInMemory ||
+          operation.resourceKeyPresent === true ||
+          selectedProof?.resourceKeyPresent === true;
+      }
+      return result;
+    },
+    pollOperation: async (operationName) => {
+      const result = await driveJsonRequest(
         buildOperationGetUrl(operationName),
         'GET',
         accessTokenInMemory,
-        selectedProof?.resourceKey,
-      ),
+        downloadResourceKeyInMemory || selectedProof?.resourceKey,
+      );
+      if (result.ok) {
+        const operation = evaluateDownloadOperation(result.operation);
+        downloadResourceKeyInMemory =
+          operation.resourceKey || downloadResourceKeyInMemory || selectedProof?.resourceKey;
+        downloadResourceKeyPresentInMemory =
+          downloadResourceKeyPresentInMemory ||
+          operation.resourceKeyPresent === true ||
+          selectedProof?.resourceKeyPresent === true;
+      }
+      return result;
+    },
     onState: (state, category) => setMp4Status(state, category),
   });
 }
@@ -486,12 +548,19 @@ async function prepareMp4() {
 function handlePreparationOutcome(outcome) {
   if (outcome.state === 'ready') {
     downloadUriInMemory = outcome.downloadUri;
+    downloadResourceKeyInMemory =
+      outcome.resourceKey || downloadResourceKeyInMemory || selectedProof?.resourceKey;
+    downloadResourceKeyPresentInMemory =
+      downloadResourceKeyPresentInMemory ||
+      outcome.resourceKeyPresent === true ||
+      selectedProof?.resourceKeyPresent === true;
     accessTokenInMemory = '';
     setAuthorizationStatus('Operation complete; authorization token cleared');
     setMp4Status('ready');
     const button = document.querySelector('#receive-mp4-bytes');
     button.hidden = false;
     button.disabled = false;
+    updatePreparedDownloadDiagnostics();
   } else if (outcome.state === 'timeout') {
     const button = document.querySelector('#continue-operation');
     button.hidden = false;
@@ -543,8 +612,16 @@ async function receiveMp4Bytes() {
   try {
     const response = await fetch(destination, {
       method: 'GET',
-      headers: selectedProof?.resourceKey
-        ? { 'X-Goog-Drive-Resource-Keys': `${selectedProof.fileId}/${selectedProof.resourceKey}` }
+      headers: buildDriveResourceKeysHeader(
+        selectedProof?.fileId,
+        downloadResourceKeyInMemory || selectedProof?.resourceKey,
+      )
+        ? {
+            'X-Goog-Drive-Resource-Keys': buildDriveResourceKeysHeader(
+              selectedProof.fileId,
+              downloadResourceKeyInMemory || selectedProof?.resourceKey,
+            ),
+          }
         : {},
       cache: 'no-store',
       credentials: 'omit',
@@ -556,6 +633,7 @@ async function receiveMp4Bytes() {
     if (!response.ok) {
       setMp4Status('failed', classifyDownloadHttpFailure(response.status));
       if (response.status === 401) downloadUriInMemory = undefined;
+      updatePreparedDownloadDiagnostics();
       return;
     }
     const blob = await response.blob();
@@ -566,6 +644,7 @@ async function receiveMp4Bytes() {
     }
     downloadBlobInMemory = blob;
     downloadUriInMemory = undefined;
+    updatePreparedDownloadDiagnostics();
     setText(
       '#bytes-received-status',
       `Yes (${result.byteCount} bytes; ${blob.type || 'video/mp4'})`,
@@ -581,6 +660,30 @@ async function receiveMp4Bytes() {
     activeRequestControllers.delete(controller);
     button.disabled = false;
   }
+}
+
+function openPreparedMp4() {
+  const diagnostics = getPreparedDownloadDiagnostics(
+    downloadUriInMemory,
+    downloadResourceKeyInMemory || selectedProof?.resourceKey,
+    downloadResourceKeyPresentInMemory || selectedProof?.resourceKeyPresent,
+  );
+  if (!canOpenPreparedDownloadInBrowser(diagnostics) || !downloadUriInMemory) return;
+  const destination = validateGoogleDownloadUri(downloadUriInMemory.href);
+  if (!destination || destination.protocol !== 'https:') return;
+
+  const anchor = document.createElement('a');
+  anchor.href = destination.href;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
+  anchor.referrerPolicy = 'no-referrer';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setText(
+    '#prepared-navigation-status',
+    'Navigation initiated; browser download completion is not observable here.',
+  );
 }
 
 function saveMp4() {
@@ -613,6 +716,8 @@ function resetProof() {
   selectedProof = undefined;
   preparationFlow = undefined;
   downloadUriInMemory = undefined;
+  downloadResourceKeyInMemory = undefined;
+  downloadResourceKeyPresentInMemory = false;
   downloadBlobInMemory = undefined;
   preparationBusy = false;
   preparationAttempted = false;
@@ -620,6 +725,7 @@ function resetProof() {
   if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
   objectUrlInMemory = undefined;
   document.querySelector('#ack-only-intended-clip').checked = false;
+  updatePreparedDownloadDiagnostics();
   for (const selector of ['#continue-operation', '#receive-mp4-bytes', '#save-mp4']) {
     const button = document.querySelector(selector);
     button.hidden = true;
@@ -779,5 +885,6 @@ document.querySelector('#continue-operation').addEventListener('click', () => {
 document.querySelector('#receive-mp4-bytes').addEventListener('click', () => {
   void receiveMp4Bytes();
 });
+document.querySelector('#open-prepared-mp4').addEventListener('click', openPreparedMp4);
 document.querySelector('#save-mp4').addEventListener('click', saveMp4);
 document.querySelector('#reset-proof').addEventListener('click', resetProof);

@@ -49,6 +49,8 @@ export function evaluateVidsMetadata(metadata, selectedFileId, expectedFileId) {
     mimeType: metadata.mimeType,
     canDownload: metadata.capabilities.canDownload,
     expectedMatch,
+    resourceKeyPresent: Object.prototype.hasOwnProperty.call(metadata, 'resourceKey') &&
+      metadata.resourceKey !== undefined && metadata.resourceKey !== null,
     resourceKey:
       typeof metadata.resourceKey === 'string' &&
       /^[A-Za-z0-9_-]{1,200}$/.test(metadata.resourceKey)
@@ -79,6 +81,18 @@ export function buildOperationGetUrl(operationName) {
   );
 }
 
+export function buildDriveResourceKeysHeader(fileId, resourceKey) {
+  if (
+    typeof fileId !== 'string' ||
+    !FILE_ID_PATTERN.test(fileId) ||
+    typeof resourceKey !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,200}$/.test(resourceKey)
+  ) {
+    return undefined;
+  }
+  return `${fileId}/${resourceKey}`;
+}
+
 const GOOGLE_DOWNLOAD_HOST_SUFFIXES = ['googleapis.com', 'google.com', 'googleusercontent.com'];
 
 export function validateGoogleDownloadUri(rawUri) {
@@ -104,8 +118,38 @@ export function validateGoogleDownloadUri(rawUri) {
   }
 }
 
+export function getPreparedDownloadDiagnostics(downloadUri, resourceKey, resourceKeyPresent) {
+  const preparedUriPresent = downloadUri !== undefined && downloadUri !== null;
+  const rawUri = downloadUri instanceof URL ? downloadUri.href : downloadUri;
+  const hasResourceKey =
+    resourceKeyPresent ?? (typeof resourceKey === 'string' && resourceKey.length > 0);
+  return {
+    prepared_uri_present: preparedUriPresent,
+    prepared_uri_validated: Boolean(preparedUriPresent && validateGoogleDownloadUri(rawUri)),
+    resource_key_present: Boolean(preparedUriPresent && hasResourceKey),
+  };
+}
+
+export function canOpenPreparedDownloadInBrowser(diagnostics) {
+  return Boolean(
+    diagnostics?.prepared_uri_present === true &&
+      diagnostics?.prepared_uri_validated === true &&
+      diagnostics?.resource_key_present === false,
+  );
+}
+
 export function evaluateDownloadOperation(operation) {
   if (!operation || typeof operation !== 'object') return { state: 'invalid_operation' };
+  const resourceKey =
+    typeof operation.metadata?.resourceKey === 'string' &&
+    /^[A-Za-z0-9_-]{1,200}$/.test(operation.metadata.resourceKey)
+      ? operation.metadata.resourceKey
+      : undefined;
+  const resourceKeyPresent =
+    Boolean(operation.metadata) &&
+    Object.prototype.hasOwnProperty.call(operation.metadata, 'resourceKey') &&
+    operation.metadata.resourceKey !== undefined &&
+    operation.metadata.resourceKey !== null;
   if (operation.done === true) {
     if (operation.error) {
       const code = Number(operation.error.code);
@@ -124,11 +168,16 @@ export function evaluateDownloadOperation(operation) {
     const downloadUri = operation.response?.downloadUri;
     const validatedUri = validateGoogleDownloadUri(downloadUri);
     return validatedUri
-      ? { state: 'ready', downloadUri: validatedUri }
+      ? {
+          state: 'ready',
+          downloadUri: validatedUri,
+          resourceKeyPresent,
+          ...(resourceKey ? { resourceKey } : {}),
+        }
       : { state: 'invalid_download_uri' };
   }
   if (operation.done === false || operation.done === null || operation.done === undefined) {
-    return { state: 'pending' };
+    return { state: 'pending', resourceKeyPresent, ...(resourceKey ? { resourceKey } : {}) };
   }
   return { state: 'invalid_operation' };
 }
