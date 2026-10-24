@@ -10,6 +10,7 @@ import {
   DRIVE_FILE_SCOPE,
   buildFilesDownloadUrl,
   buildHostedMp4HandoffPayload,
+  buildHostedVidsReviewHandoffPayload,
   buildDriveResourceKeysHeader,
   buildOperationGetUrl,
   evaluateDownloadOperation,
@@ -63,6 +64,9 @@ let preparationBusy = false;
 let preparationAttempted = false;
 let saveAttempted = false;
 let extensionHandoffStarted = false;
+let linkedPreparationAttempted = false;
+let linkedHandoffStarted = false;
+let linkedRequestNonceInMemory;
 let objectUrlInMemory;
 let proofEpoch = 0;
 const activeRequestControllers = new Set();
@@ -185,6 +189,22 @@ function updatePreparedDownloadDiagnostics() {
   );
   handoffButton.hidden = !handoffEligible;
   handoffButton.disabled = !handoffEligible;
+  const linkedButton = document.querySelector('#prepare-linked-mp4-for-review');
+  const linkedEligible = Boolean(
+    !busy &&
+    !preparationBusy &&
+    !linkedPreparationAttempted &&
+    accessTokenInMemory &&
+    selectedProof?.status === 'verified' &&
+    selectedProof?.canDownload === true &&
+    selectedProof?.expectedMatch === true &&
+    expected.supplied &&
+    expected.valid &&
+    expected.fileId === selectedProof.fileId &&
+    document.querySelector('#ack-only-intended-clip')?.checked === true,
+  );
+  linkedButton.hidden = !linkedEligible;
+  linkedButton.disabled = !linkedEligible;
   if (diagnostics.resource_key_present) {
     setText(
       '#prepared-navigation-status',
@@ -579,6 +599,9 @@ function handlePreparationOutcome(outcome) {
     button.hidden = false;
     button.disabled = false;
     updatePreparedDownloadDiagnostics();
+    if (linkedRequestNonceInMemory && !linkedHandoffStarted) {
+      void sendLinkedPreparedMp4ToExtension();
+    }
   } else if (outcome.state === 'timeout') {
     const button = document.querySelector('#continue-operation');
     button.hidden = false;
@@ -615,6 +638,137 @@ async function continueOperationCheck() {
   } finally {
     preparationBusy = false;
     document.querySelector('#continue-operation').disabled = false;
+  }
+}
+
+async function prepareLinkedMp4ForConfirmedReview() {
+  const button = document.querySelector('#prepare-linked-mp4-for-review');
+  const expected = parseExpectedDocumentId(expectedInput.value);
+  if (
+    linkedPreparationAttempted ||
+    preparationBusy ||
+    !accessTokenInMemory ||
+    !expected.supplied ||
+    !expected.valid ||
+    selectedProof?.status !== 'verified' ||
+    selectedProof?.canDownload !== true ||
+    selectedProof?.expectedMatch !== true ||
+    selectedProof?.fileId !== expected.fileId ||
+    document.querySelector('#ack-only-intended-clip')?.checked !== true
+  )
+    return;
+  linkedPreparationAttempted = true;
+  button.disabled = true;
+  setText('#linked-preparation-status', 'Checking the armed run and current Vids snapshot');
+  try {
+    const challenge = await sendExternalMessage({
+      type: 'HOSTED_VIDS_REVIEW_NONCE_CHALLENGE',
+      expectedFileId: expected.fileId,
+    });
+    if (!challenge?.success || typeof challenge.requestNonce !== 'string') {
+      setText(
+        '#linked-preparation-status',
+        'Not authorized: no fresh matching run binding; no MP4 preparation was started.',
+      );
+      updatePreparedDownloadDiagnostics();
+      return;
+    }
+    linkedRequestNonceInMemory = challenge.requestNonce;
+    preparationBusy = true;
+    preparationFlow = createPreparationFlow();
+    const requestEpoch = proofEpoch;
+    const outcome = await preparationFlow.prepare(selectedProof.fileId);
+    if (requestEpoch === proofEpoch) handlePreparationOutcome(outcome);
+  } catch {
+    setText(
+      '#linked-preparation-status',
+      'Preparation outcome is unresolved; do not retry this run.',
+    );
+  } finally {
+    preparationBusy = false;
+    updatePreparedDownloadDiagnostics();
+  }
+}
+
+async function sendLinkedPreparedMp4ToExtension() {
+  if (linkedHandoffStarted || !linkedRequestNonceInMemory || !downloadUriInMemory) return;
+  const expected = parseExpectedDocumentId(expectedInput.value);
+  const diagnostics = getPreparedDownloadDiagnostics(
+    downloadUriInMemory,
+    downloadResourceKeyInMemory || selectedProof?.resourceKey,
+    downloadResourceKeyPresentInMemory || selectedProof?.resourceKeyPresent,
+  );
+  if (
+    !expected.valid ||
+    !expected.supplied ||
+    selectedProof?.fileId !== expected.fileId ||
+    selectedProof?.status !== 'verified' ||
+    selectedProof?.mimeType !== 'application/vnd.google-apps.vid' ||
+    selectedProof?.canDownload !== true ||
+    selectedProof?.expectedMatch !== true ||
+    diagnostics.prepared_uri_validated !== true ||
+    diagnostics.resource_key_present !== false ||
+    document.querySelector('#ack-only-intended-clip')?.checked !== true
+  ) {
+    linkedHandoffStarted = true;
+    linkedRequestNonceInMemory = undefined;
+    downloadUriInMemory = undefined;
+    setText(
+      '#linked-preparation-status',
+      'unresolved: prepared proof changed; do not retry this run.',
+    );
+    updatePreparedDownloadDiagnostics();
+    return;
+  }
+  linkedHandoffStarted = true;
+  setText(
+    '#linked-preparation-status',
+    'Prepared for this armed review; requesting one extension download',
+  );
+  try {
+    const payload = buildHostedVidsReviewHandoffPayload({
+      requestNonce: linkedRequestNonceInMemory,
+      selectedProof,
+      expectedFileId: expected.fileId,
+      preparedUri: downloadUriInMemory.href,
+      preparedUriValidated: diagnostics.prepared_uri_validated,
+      resourceKeyPresent: diagnostics.resource_key_present,
+      wholeDocumentAcknowledged:
+        document.querySelector('#ack-only-intended-clip')?.checked === true,
+    });
+    if (!payload) {
+      setText(
+        '#linked-preparation-status',
+        'Run handoff rejected by local proof checks; do not retry.',
+      );
+      linkedRequestNonceInMemory = undefined;
+      downloadUriInMemory = undefined;
+      updatePreparedDownloadDiagnostics();
+      return;
+    }
+    const outcome = await sendExternalMessage(payload);
+    const status = ['requested', 'in_progress', 'complete', 'interrupted', 'unresolved'].includes(
+      outcome?.status,
+    )
+      ? outcome.status
+      : 'unresolved';
+    setText(
+      '#linked-preparation-status',
+      status === 'complete'
+        ? 'complete: exact Chrome download item completed; resolution and content are not verified here.'
+        : `${status}: linked run remains protected unless Chrome reports complete.`,
+    );
+    linkedRequestNonceInMemory = undefined;
+    downloadUriInMemory = undefined;
+    updatePreparedDownloadDiagnostics();
+  } catch {
+    setText(
+      '#linked-preparation-status',
+      'unresolved: extension acknowledgement was not received; do not retry.',
+    );
+    linkedRequestNonceInMemory = undefined;
+    downloadUriInMemory = undefined;
+    updatePreparedDownloadDiagnostics();
   }
 }
 
@@ -825,6 +979,9 @@ function resetProof() {
   preparationAttempted = false;
   saveAttempted = false;
   extensionHandoffStarted = false;
+  linkedPreparationAttempted = false;
+  linkedHandoffStarted = false;
+  linkedRequestNonceInMemory = undefined;
   if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
   objectUrlInMemory = undefined;
   document.querySelector('#ack-only-intended-clip').checked = false;
@@ -838,6 +995,7 @@ function resetProof() {
   handoffButton.hidden = true;
   handoffButton.disabled = true;
   setText('#extension-handoff-status', 'No extension handoff requested');
+  setText('#linked-preparation-status', 'No linked run continuation requested');
   setText('#mp4-operation-status', 'Not prepared');
   setText('#bytes-received-status', 'No');
   setText('#browser-save-status', 'Not initiated');
@@ -989,6 +1147,9 @@ expectedInput.addEventListener('input', () => {
 });
 document.querySelector('#prepare-mp4').addEventListener('click', () => {
   void prepareMp4();
+});
+document.querySelector('#prepare-linked-mp4-for-review').addEventListener('click', () => {
+  void prepareLinkedMp4ForConfirmedReview();
 });
 document.querySelector('#continue-operation').addEventListener('click', () => {
   void continueOperationCheck();

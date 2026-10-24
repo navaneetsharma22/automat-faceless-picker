@@ -3,7 +3,9 @@
 This standalone static page checks whether a separately authorized web app can
 select one existing Google Vids document, read its Drive metadata, and (only
 after a second explicit acknowledged action) prepare and receive a whole-document
-MP4. It does not connect to the extension or modify a Vids document.
+MP4. An additional explicit, nonce-armed action can hand the already prepared
+URI to the installed extension for one browser-managed download. It does not
+modify a Vids document or interact with its scenes.
 
 ## Configuration in this helper
 
@@ -42,7 +44,47 @@ metadata verification only for explicit MP4 preparation and operation polling,
 then cleared on completion or reset. The returned URI and bytes remain in page
 memory; the URI is never displayed or logged. Drive requests use the OAuth
 bearer header and do not send the API key. The page does not persist either
-value, place the token in a URL, log it, or send anything to the extension.
+value, place the token in a URL, or log it. The only extension handoff sends
+the validated prepared URI and bounded metadata/attestation fields after the
+dashboard explicitly arms the exact expected document. The token, API key, and
+resource-key value are never sent.
+
+## Explicit extension download handoff
+
+The extension manifest allows external messaging from the hosted site's
+origin. Its worker additionally accepts only the exact helper HTTPS pathname,
+top frame, and tab that was selected when the dashboard arm was created. The
+dashboard must explicitly arm one canonical document ID; the in-memory nonce
+expires after 120 seconds and can be consumed only once. Extension restart,
+expiry, malformed input, or an uncertain send does not retry a download.
+
+The helper's **Send Prepared MP4 to Extension** button is enabled only for the
+already verified expected Vids file, `canDownload=true`, a validated prepared
+URI with no resource key, and the existing whole-document attestation. The
+worker checks the same conditions again, calls `chrome.downloads.download`
+once, uses a stable filename with collision uniquification, and reports the
+returned download's status by its exact ID. Browser completion does not verify
+resolution or clip content. One v1 handoff has user-reported live status
+`LIVE_VERIFIED`; repeatability for another document remains unverified.
+Chrome's Downloads API itself records its normal browser-managed source URL
+metadata; the extension does not separately log, display, or persist the URI.
+
+## Confirmed pending review continuation
+
+For the explicitly supported single-scene recovery, the dashboard action is
+run-bound to an existing confirmed Vids review and asks the user to attest that
+Vids visibly shows saved. That readiness is recorded as `user_attested`, not
+machine verified. The worker rechecks the exact document, result fingerprint,
+candidate scene, sole-scene inventory, and durations before it returns a fresh
+nonce challenge. Use the helper's **Prepare MP4 for confirmed review and send
+once** button; it obtains that challenge before starting a new `files.download`
+operation, then sends the freshly prepared URI once. A URI from the earlier
+standalone preparation or a previous independent download cannot settle the
+review. If status is unresolved, do not retry. Only Chrome's exact linked
+download ID reaching `complete` records `completed_via_hosted_transport` and
+releases the active review. This does not verify resolution or media content.
+The continuation does not insert/replace/delete scenes or automate Vids File
+menus.
 
 ## Publish manually to the existing GitHub Pages repository
 
@@ -53,9 +95,9 @@ workspace. The prepared files are in this workspace at
 1. Open the supplied repository:
    <https://github.com/navaneetsharma22/automat-faceless-picker>.
 2. Use the repository's configured GitHub Pages publishing branch and source
-   directory. Upload these five files from this helper directory into that
-   source directory, preserving these names and placing `index.html` at its
-   root: `index.html`, `styles.css`, `app.js`, `logic.js`, and `README.md`.
+   directory. Re-upload the changed helper files from this workspace,
+   preserving names and placing `index.html` at its root: `index.html`,
+   `app.js`, `logic.js`, and `README.md`. `styles.css` is unchanged.
 3. Review the file list in GitHub, then create a commit on that repository's
    configured Pages source branch. Do not upload any extension build output or
    credentials. The API key is not among these files.
@@ -97,20 +139,40 @@ or extension CSP.
    bytes**. If CORS or transport blocks access, record that outcome without a
    proxy or token forwarding. If bytes arrive, **Save MP4** initiates a browser
    save; this page cannot verify that the saved file completed.
+7. For a second independent-file handoff, use a second dedicated Vids document
+   whose canonical ID differs from v1 and whose contents are only the second
+   intended clip. Keep exactly one hosted helper tab open. In the helper,
+   perform its normal account authorization, Vids selection, metadata check,
+   whole-document attestation, and one MP4 preparation until the page reports
+   `MP4 ready` with `resource_key_present: No`. In the dashboard enter that
+   exact second document ID and click **Arm one hosted MP4 download** once.
+   Then click **Send Prepared MP4 to Extension** once. Record the helper's
+   fixed status and Chrome's exact download item. Confirm the new item is
+   distinct and does not replace v1; if the result is `unresolved`, do not
+   retry. Inspect the second saved file separately if playback or fidelity is
+   being evaluated. This is a whole-document download only; it does not
+   insert, delete, export through Vids UI, settle old pending operations, or
+   prove scene isolation. A second dedicated document does not test automatic
+   scene replacement or consecutive exports within one document.
 
 The user has supplied live metadata evidence for v1 from diagnostic mode:
 same-token metadata reported MIME `application/vnd.google-apps.vid`,
 `canDownload: true`, and expected-ID `Match`. Vids-only mode previously showed
-no documents; the root cause is unknown. The MP4 path remains unverified and
-has not been run live.
+no documents; the root cause is unknown. The hosted navigation download and
+one hosted-to-extension handoff for v1 are user-reported `LIVE_VERIFIED`.
+Chrome reported the extension item `Done` at 7.5 MB. Playback and properties
+have not been checked for that extension-downloaded file.
 
-Authorization, one-item selection, and the metadata check are already
-user-reported live evidence. The next live test is the separate acknowledged
-MP4 preparation and byte-receipt proof. After publishing this updated page,
-select v1 again in the same page session so its verified metadata and token
-remain available for the explicit MP4 action. This does not prove
-extension-client grant continuity. MP4 feasibility and browser-save completion
-remain unverified.
+Authorization, one-item selection, metadata, Drive preparation, hosted
+navigation save, and one explicit extension handoff are user-reported live
+evidence for v1. The next independent-file test requires a second dedicated
+Vids document with a different canonical ID and only the second intended clip;
+run the same one-shot hosted handoff for that exact ID and confirm Chrome
+creates a distinct item without replacing v1. This does not test automatic
+scene replacement or consecutive exports in one document. Those remain
+separate Phase 4 criteria and Vids UI export experiments are paused. The hosted
+OAuth account and prepared URI remain separate from Chrome Identity; no account
+or file-grant continuity is assumed.
 
 ## Official API references
 
@@ -125,3 +187,5 @@ remain unverified.
 - [Drive `files.download`](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/download)
 - [Google Vids MIME type](https://developers.google.com/workspace/drive/api/guides/mime-types)
 - [Using API keys in REST requests](https://docs.cloud.google.com/docs/authentication/api-keys-use)
+- [Chrome external messaging](https://developer.chrome.com/docs/extensions/develop/concepts/messaging#external)
+- [Chrome Downloads API](https://developer.chrome.com/docs/extensions/reference/api/downloads)

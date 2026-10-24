@@ -180,6 +180,29 @@ export function buildHostedMp4HandoffPayload({
   };
 }
 
+export function buildHostedVidsReviewHandoffPayload({
+  requestNonce,
+  selectedProof,
+  expectedFileId,
+  preparedUri,
+  preparedUriValidated,
+  resourceKeyPresent,
+  wholeDocumentAcknowledged,
+}) {
+  const standalonePayload = buildHostedMp4HandoffPayload({
+    requestNonce,
+    selectedProof,
+    expectedFileId,
+    preparedUri,
+    preparedUriValidated,
+    resourceKeyPresent,
+    wholeDocumentAcknowledged,
+  });
+  return standalonePayload
+    ? { ...standalonePayload, type: 'HOSTED_VIDS_REVIEW_DOWNLOAD' }
+    : undefined;
+}
+
 export function evaluateDownloadOperation(operation) {
   if (!operation || typeof operation !== 'object') return { state: 'invalid_operation' };
   const resourceKey =
