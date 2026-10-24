@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>Automat Faceless — Hosted Picker Proof</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main class="card">
+      <p class="eyebrow">Automat Faceless · feasibility proof</p>
+      <h1>Choose one Google Vids document</h1>
+      <p class="intro">
+        This standalone hosted page asks the selected Google account for
+        <code>drive.file</code>, opens Google Picker, and reads only the chosen file's ID, MIME
+        type, and download capability. It does not download or send anything to the browser
+        extension.
+      </p>
+
+      <form id="proof-form">
+        <label for="api-key">Restricted Google Picker API key</label>
+        <input
+          id="api-key"
+          name="api-key"
+          type="password"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          required
+        />
+        <p class="hint">Entered locally for this page session; cleared when the action starts.</p>
+
+        <label for="expected-document">Optional expected Vids URL or document ID</label>
+        <input
+          id="expected-document"
+          name="expected-document"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Paste a Vids URL or file ID"
+        />
+
+        <button id="start-proof" type="submit" disabled>Loading Google services…</button>
+      </form>
+
+      <section class="results" aria-live="polite" aria-labelledby="results-title">
+        <h2 id="results-title">Proof results</h2>
+        <dl>
+          <div>
+            <dt>Authorization</dt>
+            <dd id="authorization-status">Not started</dd>
+          </div>
+          <div>
+            <dt>Selection and metadata</dt>
+            <dd id="selection-status">Not started</dd>
+          </div>
+          <div>
+            <dt>Selected file ID</dt>
+            <dd id="selected-file-id">—</dd>
+          </div>
+          <div>
+            <dt>MIME type</dt>
+            <dd id="mime-type">—</dd>
+          </div>
+          <div>
+            <dt>Can download</dt>
+            <dd id="can-download">—</dd>
+          </div>
+          <div>
+            <dt>Expected document match</dt>
+            <dd id="expected-match">Not supplied</dd>
+          </div>
+        </dl>
+      </section>
+
+      <p class="boundary">
+        The web OAuth client and the extension's Chrome Identity client are separate. Account and
+        file-grant continuity between them is not assumed. Tokens and the API key stay in this
+        page's memory and are never stored or sent to the extension.
+      </p>
+    </main>
+  </body>
+</html>

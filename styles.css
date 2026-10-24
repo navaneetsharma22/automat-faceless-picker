@@ -1,0 +1,145 @@
+:root {
+  color-scheme: light;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  color: #17212b;
+  background: #f1f5f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 40px 18px;
+}
+
+.card {
+  width: min(100%, 680px);
+  margin: 0 auto;
+  padding: clamp(22px, 5vw, 42px);
+  border: 1px solid #dbe4eb;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 16px 42px rgb(23 33 43 / 8%);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #526779;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.65rem, 5vw, 2.25rem);
+  line-height: 1.15;
+}
+.intro {
+  color: #455766;
+  line-height: 1.55;
+}
+
+form {
+  display: grid;
+  gap: 9px;
+  margin-top: 28px;
+}
+label {
+  margin-top: 8px;
+  font-weight: 650;
+}
+input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #9aabb8;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+}
+input:focus-visible,
+button:focus-visible {
+  outline: 3px solid #83bbff;
+  outline-offset: 2px;
+}
+.hint {
+  margin: -4px 0 4px;
+  color: #5b6c79;
+  font-size: 0.86rem;
+}
+
+button {
+  min-height: 48px;
+  margin-top: 14px;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: #145ca8;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:disabled {
+  background: #8094a5;
+  cursor: wait;
+}
+
+.results {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid #dbe4eb;
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+}
+dl {
+  margin: 0;
+}
+dl > div {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) 1.2fr;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #edf1f4;
+}
+dt {
+  color: #526779;
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.boundary {
+  margin: 24px 0 0;
+  color: #526779;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 16px 10px;
+  }
+  .card {
+    border-radius: 12px;
+  }
+  dl > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
