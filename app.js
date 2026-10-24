@@ -1,7 +1,8 @@
-/* global AbortController, document, fetch, URL, window */
+/* global AbortController, console, document, fetch, URL, window */
 
 import {
   classifyDriveApiFailure,
+  createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
   hasRequestedScope,
   parseExpectedDocumentId,
@@ -14,6 +15,14 @@ const CLOUD_PROJECT_NUMBER = '512586348088';
 const PICKER_LOAD_TIMEOUT_MS = 15000;
 const METADATA_TIMEOUT_MS = 20000;
 const METADATA_FIELDS = 'id,mimeType,capabilities(canDownload)';
+const MAX_PICKER_CALLBACK_DIAGNOSTICS = 16;
+const PICKER_CALLBACK_CATEGORIES = new Set([
+  'picked',
+  'cancel',
+  'error',
+  'nonterminal',
+  'missing_action',
+]);
 
 const form = document.querySelector('#proof-form');
 const apiKeyInput = document.querySelector('#api-key');
@@ -26,6 +35,7 @@ let gisReady = false;
 let pickerInstance;
 let busy = false;
 let pickerApiLoadPromise;
+let pickerCallbackDiagnosticCount = 0;
 
 const fixedSelectionLabels = {
   idle: 'Not started',
@@ -146,41 +156,38 @@ function requestAccessTokenFromUserGesture() {
   });
 }
 
-async function pickerCallback(data, expectedFileId) {
-  const action = data?.[window.google.picker.Response.ACTION];
-  if (action === window.google.picker.Action.CANCEL) {
-    setSelectionStatus('cancelled');
-    cleanUpSecrets();
+function recordPickerCallbackCategory(category) {
+  if (
+    pickerCallbackDiagnosticCount >= MAX_PICKER_CALLBACK_DIAGNOSTICS ||
+    !PICKER_CALLBACK_CATEGORIES.has(category)
+  ) {
     return;
   }
-  if (action === window.google.picker.Action.ERROR) {
-    setSelectionStatus('picker_error');
-    cleanUpSecrets();
-    return;
-  }
-  if (action !== window.google.picker.Action.PICKED) {
-    setSelectionStatus('picker_error');
-    cleanUpSecrets();
-    return;
-  }
+  pickerCallbackDiagnosticCount += 1;
+  console.info('picker_callback', category);
+}
 
-  const docs = data?.[window.google.picker.Response.DOCUMENTS];
-  if (!Array.isArray(docs) || docs.length !== 1) {
-    setSelectionStatus('multiple');
-    cleanUpSecrets();
-    return;
-  }
-  const fileId = docs[0]?.[window.google.picker.Document.ID];
-  if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(fileId)) {
-    setSelectionStatus('picker_error');
-    cleanUpSecrets();
-    return;
-  }
-
-  setText('#selected-file-id', fileId);
-  setSelectionStatus('picked');
+async function processPickedFile(data, expectedFileId) {
   try {
+    const picker = window.google?.picker;
+    const documentsKey = picker?.Response?.DOCUMENTS;
+    const docs = documentsKey === undefined ? undefined : data?.[documentsKey];
+    if (!Array.isArray(docs) || docs.length !== 1) {
+      setSelectionStatus('multiple');
+      return;
+    }
+    const fileIdKey = picker?.Document?.ID;
+    const fileId = fileIdKey === undefined ? undefined : docs[0]?.[fileIdKey];
+    if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(fileId)) {
+      setSelectionStatus('picker_error');
+      return;
+    }
+
+    setText('#selected-file-id', fileId);
+    setSelectionStatus('picked');
     await verifySelectedFile(fileId, expectedFileId);
+  } catch {
+    setSelectionStatus('picker_error');
   } finally {
     cleanUpSecrets();
   }
@@ -194,7 +201,27 @@ function showPicker(expectedFileId) {
   const view = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
     .setMimeTypes(VIDS_MIME_TYPE)
     .setMode(window.google.picker.DocsViewMode.LIST);
-  pickerInstance = new window.google.picker.PickerBuilder()
+  const picker = window.google.picker;
+  const callbackLifecycle = createPickerCallbackLifecycle({
+    actions: {
+      picked: picker.Action?.PICKED,
+      cancel: picker.Action?.CANCEL,
+      error: picker.Action?.ERROR,
+    },
+    onCategory: recordPickerCallbackCategory,
+    onCancel: () => {
+      setSelectionStatus('cancelled');
+      cleanUpSecrets();
+    },
+    onError: () => {
+      setSelectionStatus('picker_error');
+      cleanUpSecrets();
+    },
+    onPicked: (data) => {
+      void processPickedFile(data, expectedFileId);
+    },
+  });
+  pickerInstance = new picker.PickerBuilder()
     .addView(view)
     .setOAuthToken(accessTokenInMemory)
     .setDeveloperKey(apiKeyInMemory)
@@ -203,7 +230,12 @@ function showPicker(expectedFileId) {
     .setMaxItems(1)
     .setSelectableMimeTypes(VIDS_MIME_TYPE)
     .setCallback((data) => {
-      void pickerCallback(data, expectedFileId);
+      const actionKey = picker.Response?.ACTION;
+      const action =
+        actionKey === undefined || data === null || typeof data !== 'object'
+          ? undefined
+          : data[actionKey];
+      callbackLifecycle(action, data);
     })
     .build();
   pickerInstance.setVisible(true);
