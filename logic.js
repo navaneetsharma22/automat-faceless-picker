@@ -1,7 +1,8 @@
-/* global URL */
+/* global URL, setTimeout */
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const VIDS_MIME_TYPE = 'application/vnd.google-apps.vid';
+export const MP4_MIME_TYPE = 'video/mp4';
 export const PICKER_MODE_VIDS_ONLY = 'vids-only';
 export const PICKER_MODE_ALL_TYPES_DIAGNOSTIC = 'all-types-diagnostic';
 
@@ -48,6 +49,209 @@ export function evaluateVidsMetadata(metadata, selectedFileId, expectedFileId) {
     mimeType: metadata.mimeType,
     canDownload: metadata.capabilities.canDownload,
     expectedMatch,
+    resourceKey:
+      typeof metadata.resourceKey === 'string' &&
+      /^[A-Za-z0-9_-]{1,200}$/.test(metadata.resourceKey)
+        ? metadata.resourceKey
+        : undefined,
+  };
+}
+
+export function buildFilesDownloadUrl(fileId) {
+  if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(fileId)) return undefined;
+  const url = new URL(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/download`,
+  );
+  url.searchParams.set('mimeType', MP4_MIME_TYPE);
+  return url;
+}
+
+export function buildOperationGetUrl(operationName) {
+  if (
+    typeof operationName !== 'string' ||
+    !/^operations\/[A-Za-z0-9_-]{1,200}$/.test(operationName)
+  ) {
+    return undefined;
+  }
+  const operationId = operationName.slice('operations/'.length);
+  return new URL(
+    `https://www.googleapis.com/drive/v3/operations/${encodeURIComponent(operationId)}`,
+  );
+}
+
+const GOOGLE_DOWNLOAD_HOST_SUFFIXES = ['googleapis.com', 'google.com', 'googleusercontent.com'];
+
+export function validateGoogleDownloadUri(rawUri) {
+  if (typeof rawUri !== 'string' || rawUri.length === 0 || rawUri.length > 8192) return undefined;
+  try {
+    const url = new URL(rawUri);
+    const googleHost = GOOGLE_DOWNLOAD_HOST_SUFFIXES.some(
+      (suffix) => url.hostname === suffix || url.hostname.endsWith(`.${suffix}`),
+    );
+    if (
+      url.protocol !== 'https:' ||
+      !googleHost ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hash
+    ) {
+      return undefined;
+    }
+    return url;
+  } catch {
+    return undefined;
+  }
+}
+
+export function evaluateDownloadOperation(operation) {
+  if (!operation || typeof operation !== 'object') return { state: 'invalid_operation' };
+  if (operation.done === true) {
+    if (operation.error) {
+      const code = Number(operation.error.code);
+      return {
+        state: 'error',
+        category:
+          code === 16
+            ? 'authorization_expired'
+            : code === 8
+              ? 'rate_limited'
+              : code === 7
+                ? 'access_denied'
+                : 'operation_failed',
+      };
+    }
+    const downloadUri = operation.response?.downloadUri;
+    const validatedUri = validateGoogleDownloadUri(downloadUri);
+    return validatedUri
+      ? { state: 'ready', downloadUri: validatedUri }
+      : { state: 'invalid_download_uri' };
+  }
+  if (operation.done === false || operation.done === null || operation.done === undefined) {
+    return { state: 'pending' };
+  }
+  return { state: 'invalid_operation' };
+}
+
+/** One POST per flow instance; polling timeout can only resume the saved operation. */
+export function createMp4PreparationFlow({
+  startDownload,
+  pollOperation,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = () => Date.now(),
+  timeoutMs = 120000,
+  onState,
+}) {
+  let preparationStarted = false;
+  let operationName;
+  let polling = false;
+  let cancelled = false;
+
+  function publish(state, category) {
+    onState?.(state, category);
+  }
+
+  async function pollUntilDone() {
+    if (cancelled) return { state: 'cancelled' };
+    if (!operationName) return { state: 'no_operation' };
+    if (polling) return { state: 'already_polling' };
+    polling = true;
+    const deadline = now() + timeoutMs;
+    let delayMs = 10000;
+    publish('polling');
+    try {
+      while (now() < deadline) {
+        const waitMs = Math.min(delayMs, Math.max(0, deadline - now()));
+        await wait(waitMs);
+        if (cancelled) return { state: 'cancelled' };
+        if (now() >= deadline) break;
+        let result;
+        try {
+          result = await pollOperation(operationName);
+        } catch {
+          if (cancelled) return { state: 'cancelled' };
+          publish('failed', 'transport_unavailable');
+          return { state: 'error', category: 'transport_unavailable' };
+        }
+        if (cancelled) return { state: 'cancelled' };
+        if (!result?.ok) {
+          if (result?.category === 'rate_limited') {
+            delayMs = Math.min(delayMs * 2, 30000);
+            continue;
+          }
+          publish('failed', result?.category || 'api_error');
+          return { state: 'error', category: result?.category || 'api_error' };
+        }
+        const outcome = evaluateDownloadOperation(result.operation);
+        if (outcome.state === 'pending') {
+          delayMs = Math.min(delayMs * 2, 30000);
+          continue;
+        }
+        if (outcome.state === 'ready') {
+          publish('ready');
+          return outcome;
+        }
+        const category = outcome.category || outcome.state;
+        publish('failed', category);
+        return { state: 'error', category };
+      }
+      publish('timeout');
+      return { state: 'timeout', operationName };
+    } finally {
+      polling = false;
+    }
+  }
+
+  return {
+    async prepare(fileId) {
+      if (cancelled) return { state: 'cancelled' };
+      if (preparationStarted) return { state: 'already_started' };
+      preparationStarted = true;
+      publish('starting');
+      let result;
+      try {
+        result = await startDownload(fileId);
+      } catch {
+        publish('failed', 'transport_uncertain');
+        return { state: 'error', category: 'transport_uncertain' };
+      }
+      if (cancelled) return { state: 'cancelled' };
+      if (!result?.ok) {
+        publish('failed', result?.category || 'api_error');
+        return { state: 'error', category: result?.category || 'api_error' };
+      }
+      const initial = evaluateDownloadOperation(result.operation);
+      if (initial.state === 'ready') {
+        publish('ready');
+        return initial;
+      }
+      if (initial.state !== 'pending') {
+        const category = initial.category || initial.state;
+        publish('failed', category);
+        return { state: 'error', category };
+      }
+      if (
+        typeof result.operation.name !== 'string' ||
+        !buildOperationGetUrl(result.operation.name)
+      ) {
+        publish('failed', 'invalid_operation');
+        return { state: 'error', category: 'invalid_operation' };
+      }
+      operationName = result.operation.name;
+      return await pollUntilDone();
+    },
+    async continuePolling() {
+      return await pollUntilDone();
+    },
+    cancel() {
+      cancelled = true;
+    },
+    get operationName() {
+      return operationName;
+    },
+    get preparationStarted() {
+      return preparationStarted;
+    },
   };
 }
 
@@ -135,4 +339,39 @@ export function classifyDriveApiFailure(status) {
   if (status === 429) return 'rate_limited';
   if (status >= 500) return 'google_api_unavailable';
   return 'metadata_request_failed';
+}
+
+export function classifyDownloadHttpFailure(status) {
+  if (status === 401) return 'authorization_expired';
+  if (status === 403) return 'access_denied';
+  if (status === 404) return 'selected_file_unavailable';
+  if (status === 429) return 'rate_limited';
+  if (status >= 500) return 'google_api_unavailable';
+  return 'api_request_rejected';
+}
+
+export function classifyDriveDownloadFailure(status, body) {
+  if (status === 403) {
+    const reasons = Array.isArray(body?.error?.errors)
+      ? body.error.errors.map((item) => item?.reason)
+      : [];
+    if (
+      reasons.some((reason) => reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded')
+    ) {
+      return 'rate_limited';
+    }
+  }
+  return classifyDownloadHttpFailure(status);
+}
+
+export function evaluateMp4BytesResponse(response, blob) {
+  if (!response?.ok)
+    return { state: 'error', category: classifyDownloadHttpFailure(response?.status || 0) };
+  if (
+    response.headers?.get?.('content-type')?.split(';')[0].trim().toLowerCase() !== MP4_MIME_TYPE
+  ) {
+    return { state: 'error', category: 'unexpected_content_type' };
+  }
+  if (!blob || blob.size <= 0) return { state: 'error', category: 'empty_response' };
+  return { state: 'received', byteCount: blob.size };
 }

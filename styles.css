@@ -126,6 +126,10 @@ button:disabled {
   cursor: wait;
 }
 
+button[hidden] {
+  display: none;
+}
+
 .results {
   margin-top: 30px;
   padding-top: 20px;

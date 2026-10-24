@@ -95,6 +95,44 @@
         </dl>
       </section>
 
+      <section class="results mp4-proof" aria-live="polite" aria-labelledby="mp4-title">
+        <h2 id="mp4-title">Separate whole-document MP4 proof</h2>
+        <p class="boundary">
+          Preparing an MP4 renders the entire selected Vids document. Continue only if you attest
+          that it contains only the intended clip. This is your attestation; this page does not
+          verify scene isolation.
+        </p>
+        <label class="mode-option">
+          <input id="ack-only-intended-clip" type="checkbox" />
+          I confirm this document contains only the intended clip.
+        </label>
+        <button id="prepare-mp4" type="button" disabled>Prepare MP4 Download</button>
+        <button id="continue-operation" type="button" hidden disabled>
+          Continue checking operation
+        </button>
+        <button id="receive-mp4-bytes" type="button" hidden disabled>Receive MP4 bytes</button>
+        <button id="save-mp4" type="button" hidden disabled>Save MP4</button>
+        <button id="reset-proof" type="button">Reset proof</button>
+        <dl>
+          <div>
+            <dt>Preparation</dt>
+            <dd id="mp4-operation-status">Not prepared</dd>
+          </div>
+          <div>
+            <dt>Bytes received</dt>
+            <dd id="bytes-received-status">No</dd>
+          </div>
+          <div>
+            <dt>Browser save</dt>
+            <dd id="browser-save-status">Not initiated</dd>
+          </div>
+          <div>
+            <dt>Saved file completion</dt>
+            <dd id="saved-file-status">Not verifiable by this webpage</dd>
+          </div>
+        </dl>
+      </section>
+
       <p class="boundary">
         The web OAuth client and the extension's Chrome Identity client are separate. Account and
         file-grant continuity between them is not assumed. Tokens and the API key stay in this

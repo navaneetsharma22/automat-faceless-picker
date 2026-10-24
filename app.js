@@ -2,14 +2,21 @@
 
 import {
   classifyDriveApiFailure,
+  classifyDownloadHttpFailure,
+  classifyDriveDownloadFailure,
+  createMp4PreparationFlow,
   createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
+  buildFilesDownloadUrl,
+  buildOperationGetUrl,
+  evaluateMp4BytesResponse,
   evaluateVidsMetadata,
   getPickerViewConfiguration,
   hasRequestedScope,
   PICKER_MODE_ALL_TYPES_DIAGNOSTIC,
   PICKER_MODE_VIDS_ONLY,
   parseExpectedDocumentId,
+  validateGoogleDownloadUri,
 } from './logic.js';
 
 const WEB_OAUTH_CLIENT_ID =
@@ -17,7 +24,8 @@ const WEB_OAUTH_CLIENT_ID =
 const CLOUD_PROJECT_NUMBER = '512586348088';
 const PICKER_LOAD_TIMEOUT_MS = 15000;
 const METADATA_TIMEOUT_MS = 20000;
-const METADATA_FIELDS = 'id,mimeType,capabilities(canDownload)';
+const DOWNLOAD_TIMEOUT_MS = 20000;
+const METADATA_FIELDS = 'id,mimeType,capabilities(canDownload),resourceKey';
 const MAX_PICKER_CALLBACK_DIAGNOSTICS = 16;
 const PICKER_CALLBACK_CATEGORIES = new Set([
   'picked',
@@ -39,6 +47,16 @@ let pickerInstance;
 let busy = false;
 let pickerApiLoadPromise;
 let pickerCallbackDiagnosticCount = 0;
+let selectedProof;
+let preparationFlow;
+let downloadUriInMemory;
+let downloadBlobInMemory;
+let preparationBusy = false;
+let preparationAttempted = false;
+let saveAttempted = false;
+let objectUrlInMemory;
+let proofEpoch = 0;
+const activeRequestControllers = new Set();
 
 const fixedSelectionLabels = {
   idle: 'Not started',
@@ -66,6 +84,59 @@ const fixedSelectionLabels = {
   metadata_failed: 'File metadata could not be verified',
   invalid_expected: 'Expected Vids URL or document ID is invalid',
 };
+
+const mp4Messages = {
+  starting: 'MP4 preparation requested once',
+  polling: 'Waiting for Drive rendering',
+  ready: 'MP4 ready',
+  timeout: 'Polling timed out; continue checking the same operation',
+  already_started: 'Preparation was already requested; no second request was sent',
+  authorization_expired: 'Authorization expired; reset and reconnect before a new proof',
+  rate_limited: 'Drive rate limit reached; continue checking later',
+  access_denied: 'Drive denied the MP4 operation',
+  operation_failed: 'Drive MP4 operation failed',
+  transport_uncertain: 'Preparation transport failed; outcome is uncertain; reset before retrying',
+  transport_unavailable: 'Operation check transport failed',
+  api_unavailable: 'Drive API unavailable',
+  api_request_rejected: 'Drive rejected the MP4 request',
+  selected_file_unavailable: 'Selected document unavailable',
+  invalid_operation: 'Drive returned an invalid operation',
+  invalid_download_uri: 'Drive returned an unusable download destination',
+  no_operation: 'No operation is available',
+  already_polling: 'Operation check already in progress',
+  preparing: 'Preparing MP4',
+  bytes_received: 'MP4 bytes received',
+  cors_transport: 'Bytes not received; browser CORS or transport blocked access',
+  unexpected_content_type: 'Received content was not video/mp4',
+  empty_response: 'No MP4 bytes received',
+  save_initiated: 'Browser save initiated; completion is not observable here',
+};
+
+function setMp4Status(state, category) {
+  setText(
+    '#mp4-operation-status',
+    mp4Messages[category] || mp4Messages[state] || 'MP4 proof unavailable',
+  );
+}
+
+function updatePrepareEligibility() {
+  const ack = document.querySelector('#ack-only-intended-clip')?.checked === true;
+  const expected = parseExpectedDocumentId(expectedInput.value);
+  const eligible = Boolean(
+    !busy &&
+    !preparationBusy &&
+    !preparationAttempted &&
+    accessTokenInMemory &&
+    selectedProof?.status === 'verified' &&
+    selectedProof.canDownload === true &&
+    selectedProof.expectedMatch === true &&
+    expected.supplied &&
+    expected.valid &&
+    expected.fileId === selectedProof.fileId &&
+    ack,
+  );
+  document.querySelector('#prepare-mp4').disabled = !eligible;
+}
 
 function setText(selector, value) {
   const element = document.querySelector(selector);
@@ -188,11 +259,21 @@ async function processPickedFile(data, expectedFileId) {
 
     setText('#selected-file-id', fileId);
     setSelectionStatus('picked');
-    await verifySelectedFile(fileId, expectedFileId);
+    const result = await verifySelectedFile(fileId, expectedFileId);
+    if (result?.status === 'verified' && result.canDownload && result.expectedMatch === true) {
+      selectedProof = { ...result, fileId };
+      setAuthorizationStatus(
+        'Authorized selected account for drive.file; token held in page memory for the explicit MP4 action',
+      );
+    } else {
+      accessTokenInMemory = '';
+      selectedProof = undefined;
+    }
   } catch {
     setSelectionStatus('picker_error');
   } finally {
-    cleanUpSecrets();
+    closePickerAfterSelection();
+    updatePrepareEligibility();
   }
 }
 
@@ -258,6 +339,9 @@ async function verifySelectedFile(fileId, expectedFileId) {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${accessTokenInMemory}`,
+        ...(selectedProof?.resourceKey
+          ? { 'X-Goog-Drive-Resource-Keys': `${fileId}/${selectedProof.resourceKey}` }
+          : {}),
       },
       cache: 'no-store',
       credentials: 'omit',
@@ -286,14 +370,14 @@ async function verifySelectedFile(fileId, expectedFileId) {
       } else {
         setSelectionStatus('metadata_failed');
       }
-      return;
+      return undefined;
     }
 
     const metadata = await response.json();
     const result = evaluateVidsMetadata(metadata, fileId, expectedFileId);
     if (!result.valid) {
       setSelectionStatus('metadata_failed');
-      return;
+      return undefined;
     }
 
     setText('#mime-type', result.mimeType.slice(0, 128));
@@ -307,11 +391,256 @@ async function verifySelectedFile(fileId, expectedFileId) {
           : 'Mismatch',
     );
     setSelectionStatus(result.status);
+    return result;
   } catch (error) {
     setSelectionStatus(error?.name === 'AbortError' ? 'metadata_timeout' : 'network_error');
+    return undefined;
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function driveJsonRequest(url, method, token, resourceKey) {
+  if (url.origin !== 'https://www.googleapis.com')
+    return { ok: false, category: 'api_request_rejected' };
+  const controller = new AbortController();
+  activeRequestControllers.add(controller);
+  const timeout = window.setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        ...(resourceKey && method === 'POST'
+          ? { 'X-Goog-Drive-Resource-Keys': `${selectedProof.fileId}/${resourceKey}` }
+          : {}),
+      },
+      cache: 'no-store',
+      credentials: 'omit',
+      mode: 'cors',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let errorBody;
+      if (response.status === 403) {
+        try {
+          errorBody = await response.json();
+        } catch {
+          /* fixed status category below */
+        }
+      }
+      return { ok: false, category: classifyDriveDownloadFailure(response.status, errorBody) };
+    }
+    return { ok: true, operation: await response.json() };
+  } catch (error) {
+    return {
+      ok: false,
+      category: error?.name === 'AbortError' ? 'transport_unavailable' : 'transport_unavailable',
+    };
+  } finally {
+    window.clearTimeout(timeout);
+    activeRequestControllers.delete(controller);
+  }
+}
+
+function createPreparationFlow() {
+  return createMp4PreparationFlow({
+    startDownload: (fileId) =>
+      driveJsonRequest(
+        buildFilesDownloadUrl(fileId),
+        'POST',
+        accessTokenInMemory,
+        selectedProof?.resourceKey,
+      ),
+    pollOperation: (operationName) =>
+      driveJsonRequest(
+        buildOperationGetUrl(operationName),
+        'GET',
+        accessTokenInMemory,
+        selectedProof?.resourceKey,
+      ),
+    onState: (state, category) => setMp4Status(state, category),
+  });
+}
+
+async function prepareMp4() {
+  updatePrepareEligibility();
+  if (document.querySelector('#prepare-mp4').disabled || preparationBusy) return;
+  preparationBusy = true;
+  preparationAttempted = true;
+  preparationFlow = createPreparationFlow();
+  const requestEpoch = proofEpoch;
+  document.querySelector('#prepare-mp4').disabled = true;
+  try {
+    const outcome = await preparationFlow.prepare(selectedProof.fileId);
+    if (requestEpoch === proofEpoch) handlePreparationOutcome(outcome);
+  } finally {
+    preparationBusy = false;
+    updatePrepareEligibility();
+  }
+}
+
+function handlePreparationOutcome(outcome) {
+  if (outcome.state === 'ready') {
+    downloadUriInMemory = outcome.downloadUri;
+    accessTokenInMemory = '';
+    setAuthorizationStatus('Operation complete; authorization token cleared');
+    setMp4Status('ready');
+    const button = document.querySelector('#receive-mp4-bytes');
+    button.hidden = false;
+    button.disabled = false;
+  } else if (outcome.state === 'timeout') {
+    const button = document.querySelector('#continue-operation');
+    button.hidden = false;
+    button.disabled = false;
+    setMp4Status('timeout');
+  } else if (outcome.state === 'error') {
+    if (outcome.category !== 'transport_unavailable') {
+      accessTokenInMemory = '';
+      setAuthorizationStatus(
+        outcome.category === 'authorization_expired'
+          ? 'Authorization expired; token cleared'
+          : 'MP4 operation ended; authorization token cleared',
+      );
+    }
+    if (outcome.category === 'transport_unavailable' && preparationFlow?.operationName) {
+      const button = document.querySelector('#continue-operation');
+      button.hidden = false;
+      button.disabled = false;
+    }
+    setMp4Status('failed', outcome.category);
+  } else {
+    setMp4Status(outcome.state, outcome.category);
+  }
+}
+
+async function continueOperationCheck() {
+  if (!preparationFlow || preparationBusy) return;
+  preparationBusy = true;
+  const requestEpoch = proofEpoch;
+  document.querySelector('#continue-operation').disabled = true;
+  try {
+    const outcome = await preparationFlow.continuePolling();
+    if (requestEpoch === proofEpoch) handlePreparationOutcome(outcome);
+  } finally {
+    preparationBusy = false;
+    document.querySelector('#continue-operation').disabled = false;
+  }
+}
+
+async function receiveMp4Bytes() {
+  const uri = downloadUriInMemory;
+  const destination = uri ? validateGoogleDownloadUri(uri.href) : undefined;
+  if (!destination || destination.protocol !== 'https:' || !downloadUriInMemory) return;
+  const controller = new AbortController();
+  activeRequestControllers.add(controller);
+  const timeout = window.setTimeout(() => controller.abort(), 60000);
+  const button = document.querySelector('#receive-mp4-bytes');
+  button.disabled = true;
+  try {
+    const response = await fetch(destination, {
+      method: 'GET',
+      headers: selectedProof?.resourceKey
+        ? { 'X-Goog-Drive-Resource-Keys': `${selectedProof.fileId}/${selectedProof.resourceKey}` }
+        : {},
+      cache: 'no-store',
+      credentials: 'omit',
+      mode: 'cors',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      setMp4Status('failed', classifyDownloadHttpFailure(response.status));
+      if (response.status === 401) downloadUriInMemory = undefined;
+      return;
+    }
+    const blob = await response.blob();
+    const result = evaluateMp4BytesResponse(response, blob);
+    if (result.state !== 'received') {
+      setMp4Status('failed', result.category);
+      return;
+    }
+    downloadBlobInMemory = blob;
+    downloadUriInMemory = undefined;
+    setText(
+      '#bytes-received-status',
+      `Yes (${result.byteCount} bytes; ${blob.type || 'video/mp4'})`,
+    );
+    setMp4Status('bytes_received');
+    const saveButton = document.querySelector('#save-mp4');
+    saveButton.hidden = false;
+    saveButton.disabled = false;
+  } catch {
+    setMp4Status('failed', 'cors_transport');
+  } finally {
+    window.clearTimeout(timeout);
+    activeRequestControllers.delete(controller);
+    button.disabled = false;
+  }
+}
+
+function saveMp4() {
+  if (!downloadBlobInMemory || saveAttempted) return;
+  saveAttempted = true;
+  document.querySelector('#save-mp4').disabled = true;
+  objectUrlInMemory = URL.createObjectURL(downloadBlobInMemory);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrlInMemory;
+  anchor.download = 'selected-vids.mp4';
+  anchor.rel = 'noopener noreferrer';
+  anchor.referrerPolicy = 'no-referrer';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setText('#browser-save-status', mp4Messages.save_initiated);
+  setText('#saved-file-status', 'Not verifiable by this webpage');
+  window.setTimeout(() => {
+    if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
+    objectUrlInMemory = undefined;
+  }, 60000);
+}
+
+function resetProof() {
+  proofEpoch += 1;
+  preparationFlow?.cancel();
+  for (const controller of activeRequestControllers) controller.abort();
+  activeRequestControllers.clear();
+  cleanUpSecrets();
+  selectedProof = undefined;
+  preparationFlow = undefined;
+  downloadUriInMemory = undefined;
+  downloadBlobInMemory = undefined;
+  preparationBusy = false;
+  preparationAttempted = false;
+  saveAttempted = false;
+  if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
+  objectUrlInMemory = undefined;
+  document.querySelector('#ack-only-intended-clip').checked = false;
+  for (const selector of ['#continue-operation', '#receive-mp4-bytes', '#save-mp4']) {
+    const button = document.querySelector(selector);
+    button.hidden = true;
+    button.disabled = true;
+  }
+  setText('#mp4-operation-status', 'Not prepared');
+  setText('#bytes-received-status', 'No');
+  setText('#browser-save-status', 'Not initiated');
+  setText('#saved-file-status', 'Not verifiable by this webpage');
+  updatePrepareEligibility();
+}
+
+function closePickerAfterSelection() {
+  apiKeyInMemory = '';
+  try {
+    pickerInstance?.dispose();
+  } catch {
+    /* already disposed */
+  }
+  pickerInstance = undefined;
+  setBusy(false);
 }
 
 function cleanUpSecrets() {
@@ -329,6 +658,7 @@ function cleanUpSecrets() {
 async function startProof(event) {
   event.preventDefault();
   if (busy) return;
+  resetProof();
 
   const apiKey = apiKeyInput.value.trim();
   const expected = parseExpectedDocumentId(expectedInput.value);
@@ -435,3 +765,19 @@ document
     startButton.disabled = true;
     setSelectionStatus('picker_unavailable');
   });
+
+document
+  .querySelector('#ack-only-intended-clip')
+  ?.addEventListener('change', updatePrepareEligibility);
+expectedInput.addEventListener('input', updatePrepareEligibility);
+document.querySelector('#prepare-mp4').addEventListener('click', () => {
+  void prepareMp4();
+});
+document.querySelector('#continue-operation').addEventListener('click', () => {
+  void continueOperationCheck();
+});
+document.querySelector('#receive-mp4-bytes').addEventListener('click', () => {
+  void receiveMp4Bytes();
+});
+document.querySelector('#save-mp4').addEventListener('click', saveMp4);
+document.querySelector('#reset-proof').addEventListener('click', resetProof);
