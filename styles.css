@@ -80,6 +80,35 @@ button:focus-visible {
   font-size: 0.86rem;
 }
 
+.picker-mode {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid #dbe4eb;
+  border-radius: 8px;
+}
+.picker-mode legend {
+  padding: 0 5px;
+  color: #526779;
+  font-weight: 650;
+}
+.mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  font-weight: 500;
+}
+.mode-option input {
+  width: auto;
+  min-height: auto;
+  margin: 4px 0 0;
+}
+.picker-mode .hint {
+  margin: 0;
+}
+
 button {
   min-height: 48px;
   margin-top: 14px;

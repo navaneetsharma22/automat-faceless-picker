@@ -14,7 +14,11 @@ not download content, connect to the extension, or modify a Vids document.
 - Google Identity Services uses the browser popup token flow with
   `prompt: 'select_account consent'` and `include_granted_scopes: false`. No
   redirect URI or client secret is used.
-- Picker is limited to one selectable `application/vnd.google-apps.vid` file.
+- The default Picker view is limited to one selectable
+  `application/vnd.google-apps.vid` file. The explicitly labeled **Browse all
+  file types (diagnostic)** option omits both Picker MIME filters to compare
+  inventory visibility. It still allows one selection and never passes unless
+  Drive metadata confirms the selected file is a Vids document.
 - Metadata request: Drive API `files.get`, requesting only
   `id,mimeType,capabilities(canDownload)`.
 
@@ -57,16 +61,20 @@ or extension CSP.
 
 1. Open the hosted page in a normal browser tab. Enter the locally held API
    key and, optionally, the expected Vids URL or document ID.
-2. Click **Connect / Select Vids Document** once. In Google's account chooser,
-   select the account intended to open the document; do not assume it is the
-   account used by Chrome Identity in the extension.
+2. Select **Browse all file types (diagnostic)** for the controlled inventory
+   comparison, then click **Connect / Select Vids Document** once. In Google's
+   account chooser, select the account intended to open the document; do not
+   assume it is the account used by Chrome Identity in the extension.
 3. Grant only the requested `drive.file` permission. The page verifies that GIS
    reports this scope before opening Picker.
-4. Select one existing Google Vids document. The page calls Drive `files.get`
-   using the same in-memory token returned to this page by GIS.
+4. Look for the expected Vids document. If it is present, select only that
+   document. The page calls Drive `files.get` using the same in-memory token
+   returned to this page by GIS. It reports the MIME type, `canDownload`, and
+   expected-ID agreement; a non-Vids file cannot produce a successful Vids
+   proof. The page does not list or log other files or raw Picker payloads.
 5. Record only the bounded result rows: authorization, selection/metadata
-   status, selected file ID, MIME type, `canDownload`, and optional expected
-   document match. Do not copy or share the API key or token.
+   status, selected file ID, MIME type, `canDownload`, and expected-document
+   match. Do not copy or share the API key or token.
 
 The next live test is authorization, one Vids selection, and this metadata
 check only. A successful result proves selected-file metadata access for this

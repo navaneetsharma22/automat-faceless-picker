@@ -46,6 +46,22 @@
           placeholder="Paste a Vids URL or file ID"
         />
 
+        <fieldset class="picker-mode">
+          <legend>Picker inventory</legend>
+          <label class="mode-option">
+            <input type="radio" name="picker-mode" value="vids-only" checked />
+            Vids documents only (default)
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="picker-mode" value="all-types-diagnostic" />
+            Browse all file types (diagnostic)
+          </label>
+          <p class="hint">
+            Diagnostic mode broadens only the Picker view. The selected file is still checked
+            against Google Drive metadata and must be a Vids document to pass.
+          </p>
+        </fieldset>
+
         <button id="start-proof" type="submit" disabled>Loading Google services…</button>
       </form>
 

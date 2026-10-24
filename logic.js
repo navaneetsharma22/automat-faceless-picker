@@ -2,6 +2,8 @@
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const VIDS_MIME_TYPE = 'application/vnd.google-apps.vid';
+export const PICKER_MODE_VIDS_ONLY = 'vids-only';
+export const PICKER_MODE_ALL_TYPES_DIAGNOSTIC = 'all-types-diagnostic';
 
 const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 const VIDS_URL_HOSTS = new Set(['docs.google.com', 'vids.google.com']);
@@ -12,6 +14,42 @@ const PICKER_CALLBACK_CATEGORIES = new Set([
   'nonterminal',
   'missing_action',
 ]);
+
+export function getPickerViewConfiguration(mode) {
+  const diagnostic = mode === PICKER_MODE_ALL_TYPES_DIAGNOSTIC;
+  return {
+    viewId: 'docs',
+    viewMode: 'list',
+    mimeTypes: diagnostic ? undefined : VIDS_MIME_TYPE,
+    selectableMimeTypes: diagnostic ? undefined : VIDS_MIME_TYPE,
+    maxItems: 1,
+  };
+}
+
+export function evaluateVidsMetadata(metadata, selectedFileId, expectedFileId) {
+  if (
+    metadata?.id !== selectedFileId ||
+    typeof metadata.mimeType !== 'string' ||
+    typeof metadata.capabilities?.canDownload !== 'boolean'
+  ) {
+    return { valid: false, status: 'metadata_failed' };
+  }
+
+  const expectedMatch = expectedFileId === undefined ? undefined : expectedFileId === metadata.id;
+  const status =
+    metadata.mimeType !== VIDS_MIME_TYPE
+      ? 'wrong_type'
+      : expectedMatch === false
+        ? 'mismatch'
+        : 'verified';
+  return {
+    valid: true,
+    status,
+    mimeType: metadata.mimeType,
+    canDownload: metadata.capabilities.canDownload,
+    expectedMatch,
+  };
+}
 
 /**
  * Owns the Picker callback lifecycle. Once PICKED arrives, metadata verification
