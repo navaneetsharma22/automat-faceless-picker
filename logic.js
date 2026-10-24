@@ -49,8 +49,10 @@ export function evaluateVidsMetadata(metadata, selectedFileId, expectedFileId) {
     mimeType: metadata.mimeType,
     canDownload: metadata.capabilities.canDownload,
     expectedMatch,
-    resourceKeyPresent: Object.prototype.hasOwnProperty.call(metadata, 'resourceKey') &&
-      metadata.resourceKey !== undefined && metadata.resourceKey !== null,
+    resourceKeyPresent:
+      Object.prototype.hasOwnProperty.call(metadata, 'resourceKey') &&
+      metadata.resourceKey !== undefined &&
+      metadata.resourceKey !== null,
     resourceKey:
       typeof metadata.resourceKey === 'string' &&
       /^[A-Za-z0-9_-]{1,200}$/.test(metadata.resourceKey)
@@ -133,9 +135,49 @@ export function getPreparedDownloadDiagnostics(downloadUri, resourceKey, resourc
 export function canOpenPreparedDownloadInBrowser(diagnostics) {
   return Boolean(
     diagnostics?.prepared_uri_present === true &&
-      diagnostics?.prepared_uri_validated === true &&
-      diagnostics?.resource_key_present === false,
+    diagnostics?.prepared_uri_validated === true &&
+    diagnostics?.resource_key_present === false,
   );
+}
+
+export function buildHostedMp4HandoffPayload({
+  requestNonce,
+  selectedProof,
+  expectedFileId,
+  preparedUri,
+  preparedUriValidated,
+  resourceKeyPresent,
+  wholeDocumentAcknowledged,
+}) {
+  if (
+    typeof requestNonce !== 'string' ||
+    !/^[A-Za-z0-9_-]{40,100}$/.test(requestNonce) ||
+    selectedProof?.status !== 'verified' ||
+    selectedProof?.mimeType !== VIDS_MIME_TYPE ||
+    selectedProof?.canDownload !== true ||
+    selectedProof?.expectedMatch !== true ||
+    selectedProof?.fileId !== expectedFileId ||
+    preparedUriValidated !== true ||
+    resourceKeyPresent !== false ||
+    wholeDocumentAcknowledged !== true ||
+    !validateGoogleDownloadUri(preparedUri)
+  ) {
+    return undefined;
+  }
+  return {
+    type: 'HOSTED_MP4_DOWNLOAD',
+    requestNonce,
+    selectedFileId: selectedProof.fileId,
+    expectedFileId,
+    metadataVerified: true,
+    mimeType: VIDS_MIME_TYPE,
+    canDownload: true,
+    expectedMatch: true,
+    preparedUriValidated: true,
+    resourceKeyPresent: false,
+    wholeDocumentAcknowledged: true,
+    preparedUri,
+  };
 }
 
 export function evaluateDownloadOperation(operation) {

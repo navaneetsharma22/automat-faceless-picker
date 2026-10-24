@@ -17,8 +17,9 @@
       <p class="intro">
         This standalone hosted page asks the selected Google account for
         <code>drive.file</code>, opens Google Picker, and reads only the chosen file's ID, MIME
-        type, and download capability. It does not download or send anything to the browser
-        extension.
+        type, and download capability. A separate, explicit handoff can send one prepared
+        whole-document MP4 URI to the installed extension after its dashboard arms this exact
+        document. OAuth credentials are never sent.
       </p>
 
       <form id="proof-form">
@@ -112,8 +113,12 @@
         </button>
         <button id="receive-mp4-bytes" type="button" hidden disabled>Receive MP4 bytes</button>
         <button id="open-prepared-mp4" type="button" hidden disabled>Open Prepared MP4</button>
+        <button id="send-prepared-mp4-to-extension" type="button" hidden disabled>
+          Send Prepared MP4 to Extension
+        </button>
         <button id="save-mp4" type="button" hidden disabled>Save MP4</button>
         <p id="prepared-navigation-status" role="status">No prepared destination</p>
+        <p id="extension-handoff-status" role="status">No extension handoff requested</p>
         <button id="reset-proof" type="button">Reset proof</button>
         <dl>
           <div>
@@ -150,7 +155,8 @@
       <p class="boundary">
         The web OAuth client and the extension's Chrome Identity client are separate. Account and
         file-grant continuity between them is not assumed. Tokens and the API key stay in this
-        page's memory and are never stored or sent to the extension.
+        page's memory. OAuth tokens and API keys are never sent to the extension. The explicit
+        download handoff sends only the validated prepared URI and bounded document proof.
       </p>
     </main>
   </body>

@@ -1,4 +1,4 @@
-/* global AbortController, console, document, fetch, URL, window */
+/* global AbortController, chrome, console, document, fetch, URL, window */
 
 import {
   classifyDriveApiFailure,
@@ -9,6 +9,7 @@ import {
   createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
   buildFilesDownloadUrl,
+  buildHostedMp4HandoffPayload,
   buildDriveResourceKeysHeader,
   buildOperationGetUrl,
   evaluateDownloadOperation,
@@ -26,6 +27,7 @@ import {
 const WEB_OAUTH_CLIENT_ID =
   '512586348088-scbsk1l4mfuvr524n0g88h9n1ovj6apg.apps.googleusercontent.com';
 const CLOUD_PROJECT_NUMBER = '512586348088';
+const EXTENSION_ID = 'iligjolepbmhcijfanahgnoaagoaeooo';
 const PICKER_LOAD_TIMEOUT_MS = 15000;
 const METADATA_TIMEOUT_MS = 20000;
 const DOWNLOAD_TIMEOUT_MS = 20000;
@@ -60,6 +62,7 @@ let downloadBlobInMemory;
 let preparationBusy = false;
 let preparationAttempted = false;
 let saveAttempted = false;
+let extensionHandoffStarted = false;
 let objectUrlInMemory;
 let proofEpoch = 0;
 const activeRequestControllers = new Set();
@@ -167,6 +170,21 @@ function updatePreparedDownloadDiagnostics() {
   const eligible = canOpenPreparedDownloadInBrowser(diagnostics);
   button.hidden = !eligible;
   button.disabled = !eligible;
+  const handoffButton = document.querySelector('#send-prepared-mp4-to-extension');
+  const expected = parseExpectedDocumentId(expectedInput.value);
+  const handoffEligible = Boolean(
+    eligible &&
+    !extensionHandoffStarted &&
+    selectedProof?.status === 'verified' &&
+    selectedProof?.canDownload === true &&
+    selectedProof?.expectedMatch === true &&
+    expected.valid &&
+    expected.supplied &&
+    expected.fileId === selectedProof.fileId &&
+    document.querySelector('#ack-only-intended-clip')?.checked === true,
+  );
+  handoffButton.hidden = !handoffEligible;
+  handoffButton.disabled = !handoffEligible;
   if (diagnostics.resource_key_present) {
     setText(
       '#prepared-navigation-status',
@@ -686,6 +704,90 @@ function openPreparedMp4() {
   );
 }
 
+function sendExternalMessage(message) {
+  return new Promise((resolve, reject) => {
+    if (!chrome?.runtime?.sendMessage) {
+      reject(new Error('unavailable'));
+      return;
+    }
+    const timeout = window.setTimeout(() => reject(new Error('timeout')), 10000);
+    try {
+      chrome.runtime.sendMessage(EXTENSION_ID, message, (response) => {
+        window.clearTimeout(timeout);
+        if (chrome.runtime.lastError) reject(new Error('unavailable'));
+        else resolve(response);
+      });
+    } catch {
+      window.clearTimeout(timeout);
+      reject(new Error('unavailable'));
+    }
+  });
+}
+
+async function sendPreparedMp4ToExtension() {
+  if (extensionHandoffStarted) return;
+  const expected = parseExpectedDocumentId(expectedInput.value);
+  const diagnostics = getPreparedDownloadDiagnostics(
+    downloadUriInMemory,
+    downloadResourceKeyInMemory || selectedProof?.resourceKey,
+    downloadResourceKeyPresentInMemory || selectedProof?.resourceKeyPresent,
+  );
+  if (
+    !expected.valid ||
+    !expected.supplied ||
+    !downloadUriInMemory ||
+    !canOpenPreparedDownloadInBrowser(diagnostics) ||
+    selectedProof?.status !== 'verified' ||
+    selectedProof?.canDownload !== true ||
+    selectedProof?.expectedMatch !== true ||
+    selectedProof?.fileId !== expected.fileId ||
+    document.querySelector('#ack-only-intended-clip')?.checked !== true
+  ) {
+    return;
+  }
+  document.querySelector('#send-prepared-mp4-to-extension').disabled = true;
+  extensionHandoffStarted = true;
+  setText('#extension-handoff-status', 'requested');
+  try {
+    const challenge = await sendExternalMessage({ type: 'HOSTED_MP4_NONCE_CHALLENGE' });
+    if (!challenge?.success || typeof challenge.requestNonce !== 'string') {
+      setText('#extension-handoff-status', 'unresolved: no matching active dashboard arm');
+      extensionHandoffStarted = false;
+      updatePreparedDownloadDiagnostics();
+      return;
+    }
+    const payload = buildHostedMp4HandoffPayload({
+      requestNonce: challenge.requestNonce,
+      selectedProof,
+      expectedFileId: expected.fileId,
+      preparedUri: downloadUriInMemory.href,
+      preparedUriValidated: diagnostics.prepared_uri_validated,
+      resourceKeyPresent: diagnostics.resource_key_present,
+      wholeDocumentAcknowledged:
+        document.querySelector('#ack-only-intended-clip')?.checked === true,
+    });
+    if (!payload) {
+      setText(
+        '#extension-handoff-status',
+        'unresolved: prepared document proof is no longer eligible',
+      );
+      return;
+    }
+    const outcome = await sendExternalMessage(payload);
+    const status = ['requested', 'in_progress', 'complete', 'interrupted', 'unresolved'].includes(
+      outcome?.status,
+    )
+      ? outcome.status
+      : 'unresolved';
+    setText('#extension-handoff-status', status);
+  } catch {
+    setText(
+      '#extension-handoff-status',
+      'unresolved: extension response was not received; do not retry',
+    );
+  }
+}
+
 function saveMp4() {
   if (!downloadBlobInMemory || saveAttempted) return;
   saveAttempted = true;
@@ -722,6 +824,7 @@ function resetProof() {
   preparationBusy = false;
   preparationAttempted = false;
   saveAttempted = false;
+  extensionHandoffStarted = false;
   if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
   objectUrlInMemory = undefined;
   document.querySelector('#ack-only-intended-clip').checked = false;
@@ -731,6 +834,10 @@ function resetProof() {
     button.hidden = true;
     button.disabled = true;
   }
+  const handoffButton = document.querySelector('#send-prepared-mp4-to-extension');
+  handoffButton.hidden = true;
+  handoffButton.disabled = true;
+  setText('#extension-handoff-status', 'No extension handoff requested');
   setText('#mp4-operation-status', 'Not prepared');
   setText('#bytes-received-status', 'No');
   setText('#browser-save-status', 'Not initiated');
@@ -872,10 +979,14 @@ document
     setSelectionStatus('picker_unavailable');
   });
 
-document
-  .querySelector('#ack-only-intended-clip')
-  ?.addEventListener('change', updatePrepareEligibility);
-expectedInput.addEventListener('input', updatePrepareEligibility);
+document.querySelector('#ack-only-intended-clip')?.addEventListener('change', () => {
+  updatePrepareEligibility();
+  updatePreparedDownloadDiagnostics();
+});
+expectedInput.addEventListener('input', () => {
+  updatePrepareEligibility();
+  updatePreparedDownloadDiagnostics();
+});
 document.querySelector('#prepare-mp4').addEventListener('click', () => {
   void prepareMp4();
 });
@@ -886,5 +997,8 @@ document.querySelector('#receive-mp4-bytes').addEventListener('click', () => {
   void receiveMp4Bytes();
 });
 document.querySelector('#open-prepared-mp4').addEventListener('click', openPreparedMp4);
+document
+  .querySelector('#send-prepared-mp4-to-extension')
+  .addEventListener('click', () => void sendPreparedMp4ToExtension());
 document.querySelector('#save-mp4').addEventListener('click', saveMp4);
 document.querySelector('#reset-proof').addEventListener('click', resetProof);
