@@ -4,9 +4,12 @@ import {
   classifyDriveApiFailure,
   createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
+  evaluateVidsMetadata,
+  getPickerViewConfiguration,
   hasRequestedScope,
+  PICKER_MODE_ALL_TYPES_DIAGNOSTIC,
+  PICKER_MODE_VIDS_ONLY,
   parseExpectedDocumentId,
-  VIDS_MIME_TYPE,
 } from './logic.js';
 
 const WEB_OAUTH_CLIENT_ID =
@@ -193,15 +196,16 @@ async function processPickedFile(data, expectedFileId) {
   }
 }
 
-function showPicker(expectedFileId) {
+function showPicker(expectedFileId, mode) {
   if (!pickerApiReady || !window.google?.picker) {
     throw new Error('picker_unavailable');
   }
 
-  const view = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
-    .setMimeTypes(VIDS_MIME_TYPE)
-    .setMode(window.google.picker.DocsViewMode.LIST);
   const picker = window.google.picker;
+  const configuration = getPickerViewConfiguration(mode);
+  const view = new picker.DocsView(picker.ViewId.DOCS);
+  if (configuration.mimeTypes) view.setMimeTypes(configuration.mimeTypes);
+  view.setMode(picker.DocsViewMode.LIST);
   const callbackLifecycle = createPickerCallbackLifecycle({
     actions: {
       picked: picker.Action?.PICKED,
@@ -221,14 +225,13 @@ function showPicker(expectedFileId) {
       void processPickedFile(data, expectedFileId);
     },
   });
-  pickerInstance = new picker.PickerBuilder()
+  const pickerBuilder = new picker.PickerBuilder()
     .addView(view)
     .setOAuthToken(accessTokenInMemory)
     .setDeveloperKey(apiKeyInMemory)
     .setAppId(CLOUD_PROJECT_NUMBER)
     .setOrigin(window.location.origin)
-    .setMaxItems(1)
-    .setSelectableMimeTypes(VIDS_MIME_TYPE)
+    .setMaxItems(configuration.maxItems)
     .setCallback((data) => {
       const actionKey = picker.Response?.ACTION;
       const action =
@@ -236,8 +239,11 @@ function showPicker(expectedFileId) {
           ? undefined
           : data[actionKey];
       callbackLifecycle(action, data);
-    })
-    .build();
+    });
+  if (configuration.selectableMimeTypes) {
+    pickerBuilder.setSelectableMimeTypes(configuration.selectableMimeTypes);
+  }
+  pickerInstance = pickerBuilder.build();
   pickerInstance.setVisible(true);
 }
 
@@ -284,31 +290,23 @@ async function verifySelectedFile(fileId, expectedFileId) {
     }
 
     const metadata = await response.json();
-    if (
-      metadata?.id !== fileId ||
-      typeof metadata.mimeType !== 'string' ||
-      typeof metadata.capabilities?.canDownload !== 'boolean'
-    ) {
+    const result = evaluateVidsMetadata(metadata, fileId, expectedFileId);
+    if (!result.valid) {
       setSelectionStatus('metadata_failed');
       return;
     }
 
-    setText('#mime-type', metadata.mimeType.slice(0, 128));
-    setText('#can-download', metadata.capabilities.canDownload ? 'Yes' : 'No');
-    const expectedMatches =
-      expectedFileId === undefined ? undefined : expectedFileId === metadata.id;
+    setText('#mime-type', result.mimeType.slice(0, 128));
+    setText('#can-download', result.canDownload ? 'Yes' : 'No');
     setText(
       '#expected-match',
-      expectedMatches === undefined ? 'Not supplied' : expectedMatches ? 'Match' : 'Mismatch',
+      result.expectedMatch === undefined
+        ? 'Not supplied'
+        : result.expectedMatch
+          ? 'Match'
+          : 'Mismatch',
     );
-
-    if (metadata.mimeType !== VIDS_MIME_TYPE) {
-      setSelectionStatus('wrong_type');
-    } else if (expectedMatches === false) {
-      setSelectionStatus('mismatch');
-    } else {
-      setSelectionStatus('verified');
-    }
+    setSelectionStatus(result.status);
   } catch (error) {
     setSelectionStatus(error?.name === 'AbortError' ? 'metadata_timeout' : 'network_error');
   } finally {
@@ -347,6 +345,9 @@ async function startProof(event) {
   }
 
   resetResults(expected.supplied);
+  const selectedMode = form.querySelector('input[name="picker-mode"]:checked')?.value;
+  const mode =
+    selectedMode === PICKER_MODE_ALL_TYPES_DIAGNOSTIC ? selectedMode : PICKER_MODE_VIDS_ONLY;
   apiKeyInMemory = apiKey;
   apiKeyInput.value = '';
   setBusy(true);
@@ -389,7 +390,7 @@ async function startProof(event) {
 
   try {
     await loadPickerApi();
-    showPicker(expected.fileId);
+    showPicker(expected.fileId, mode);
   } catch {
     setSelectionStatus('picker_unavailable');
     cleanUpSecrets();
