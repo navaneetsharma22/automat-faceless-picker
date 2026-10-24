@@ -5,6 +5,54 @@ export const VIDS_MIME_TYPE = 'application/vnd.google-apps.vid';
 
 const FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 const VIDS_URL_HOSTS = new Set(['docs.google.com', 'vids.google.com']);
+const PICKER_CALLBACK_CATEGORIES = new Set([
+  'picked',
+  'cancel',
+  'error',
+  'nonterminal',
+  'missing_action',
+]);
+
+/**
+ * Owns the Picker callback lifecycle. Once PICKED arrives, metadata verification
+ * owns cleanup and later Picker callbacks cannot interrupt that operation.
+ */
+export function createPickerCallbackLifecycle({
+  actions,
+  onCategory,
+  onCancel,
+  onError,
+  onPicked,
+}) {
+  let state = 'open';
+
+  return (action, eventData) => {
+    let category = 'nonterminal';
+    if (action === undefined || action === null) {
+      category = 'missing_action';
+    } else if (actions?.cancel !== undefined && action === actions.cancel) {
+      category = 'cancel';
+    } else if (actions?.error !== undefined && action === actions.error) {
+      category = 'error';
+    } else if (actions?.picked !== undefined && action === actions.picked) {
+      category = 'picked';
+    }
+
+    if (PICKER_CALLBACK_CATEGORIES.has(category)) onCategory?.(category);
+    if (state !== 'open') return;
+
+    if (category === 'cancel') {
+      state = 'terminal';
+      onCancel?.();
+    } else if (category === 'error') {
+      state = 'terminal';
+      onError?.();
+    } else if (category === 'picked') {
+      state = 'picked';
+      onPicked?.(eventData);
+    }
+  };
+}
 
 export function parseExpectedDocumentId(rawValue) {
   const value = typeof rawValue === 'string' ? rawValue.trim() : '';
