@@ -9,6 +9,7 @@ import {
   createPickerCallbackLifecycle,
   DRIVE_FILE_SCOPE,
   buildFilesDownloadUrl,
+  canPrepareTwoClipProof,
   buildHostedMp4HandoffPayload,
   buildHostedVidsReviewHandoffPayload,
   buildDriveResourceKeysHeader,
@@ -62,6 +63,7 @@ let downloadResourceKeyPresentInMemory = false;
 let downloadBlobInMemory;
 let preparationBusy = false;
 let preparationAttempted = false;
+let preparationProofMode = 'single_clip';
 let saveAttempted = false;
 let extensionHandoffStarted = false;
 let linkedPreparationAttempted = false;
@@ -149,6 +151,23 @@ function updatePrepareEligibility() {
     ack,
   );
   document.querySelector('#prepare-mp4').disabled = !eligible;
+  const twoClipEligible = Boolean(
+    !busy &&
+    !preparationBusy &&
+    !preparationAttempted &&
+    accessTokenInMemory &&
+    canPrepareTwoClipProof({
+      selectedProof,
+      expectedFileId: expected.supplied && expected.valid ? expected.fileId : undefined,
+      attestations: {
+        order: document.querySelector('#ack-two-clip-order')?.checked === true,
+        saved: document.querySelector('#ack-two-clip-saved')?.checked === true,
+        noTransitionsOrGaps:
+          document.querySelector('#ack-two-clip-clean-boundary')?.checked === true,
+      },
+    }),
+  );
+  document.querySelector('#prepare-two-clip-mp4').disabled = !twoClipEligible;
 }
 
 function setText(selector, value) {
@@ -571,12 +590,30 @@ async function prepareMp4() {
   if (document.querySelector('#prepare-mp4').disabled || preparationBusy) return;
   preparationBusy = true;
   preparationAttempted = true;
+  preparationProofMode = 'single_clip';
+  await runMp4Preparation();
+}
+
+async function prepareTwoClipMp4() {
+  updatePrepareEligibility();
+  if (document.querySelector('#prepare-two-clip-mp4').disabled || preparationBusy) return;
+  preparationBusy = true;
+  preparationAttempted = true;
+  preparationProofMode = 'two_clip_whole_document';
+  setText('#two-clip-proof-status', 'Attestations accepted; preparing one whole-document MP4');
+  await runMp4Preparation();
+}
+
+async function runMp4Preparation() {
   preparationFlow = createPreparationFlow();
   const requestEpoch = proofEpoch;
   document.querySelector('#prepare-mp4').disabled = true;
   try {
     const outcome = await preparationFlow.prepare(selectedProof.fileId);
     if (requestEpoch === proofEpoch) handlePreparationOutcome(outcome);
+  } catch {
+    if (preparationProofMode === 'two_clip_whole_document')
+      setText('#two-clip-proof-status', 'Preparation failed; see the shared preparation status');
   } finally {
     preparationBusy = false;
     updatePrepareEligibility();
@@ -595,6 +632,12 @@ function handlePreparationOutcome(outcome) {
     accessTokenInMemory = '';
     setAuthorizationStatus('Operation complete; authorization token cleared');
     setMp4Status('ready');
+    if (preparationProofMode === 'two_clip_whole_document') {
+      setText(
+        '#two-clip-proof-status',
+        'Whole-document MP4 prepared. Use the explicit browser download control; inspect the actual frame boundary before splitting.',
+      );
+    }
     const button = document.querySelector('#receive-mp4-bytes');
     button.hidden = false;
     button.disabled = false;
@@ -985,6 +1028,15 @@ function resetProof() {
   if (objectUrlInMemory) URL.revokeObjectURL(objectUrlInMemory);
   objectUrlInMemory = undefined;
   document.querySelector('#ack-only-intended-clip').checked = false;
+  for (const selector of [
+    '#ack-two-clip-order',
+    '#ack-two-clip-saved',
+    '#ack-two-clip-clean-boundary',
+  ]) {
+    document.querySelector(selector).checked = false;
+  }
+  preparationProofMode = 'single_clip';
+  setText('#two-clip-proof-status', 'No two-clip proof started');
   updatePreparedDownloadDiagnostics();
   for (const selector of ['#continue-operation', '#receive-mp4-bytes', '#save-mp4']) {
     const button = document.querySelector(selector);
@@ -1141,12 +1193,22 @@ document.querySelector('#ack-only-intended-clip')?.addEventListener('change', ()
   updatePrepareEligibility();
   updatePreparedDownloadDiagnostics();
 });
+for (const selector of [
+  '#ack-two-clip-order',
+  '#ack-two-clip-saved',
+  '#ack-two-clip-clean-boundary',
+]) {
+  document.querySelector(selector)?.addEventListener('change', updatePrepareEligibility);
+}
 expectedInput.addEventListener('input', () => {
   updatePrepareEligibility();
   updatePreparedDownloadDiagnostics();
 });
 document.querySelector('#prepare-mp4').addEventListener('click', () => {
   void prepareMp4();
+});
+document.querySelector('#prepare-two-clip-mp4').addEventListener('click', () => {
+  void prepareTwoClipMp4();
 });
 document.querySelector('#prepare-linked-mp4-for-review').addEventListener('click', () => {
   void prepareLinkedMp4ForConfirmedReview();

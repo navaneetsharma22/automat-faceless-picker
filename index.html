@@ -96,6 +96,30 @@
         </dl>
       </section>
 
+      <section class="results" aria-live="polite" aria-labelledby="two-clip-title">
+        <h2 id="two-clip-title">Separate two-clip whole-document proof</h2>
+        <p class="boundary">
+          This prepares the whole selected document as one MP4. Continue only after checking each
+          statement yourself. These are attestations; this page does not verify the timeline.
+        </p>
+        <label class="mode-option"
+          ><input id="ack-two-clip-order" type="checkbox" /> I confirm v1 visibly contains City
+          followed by YUGVERA, in that order.</label
+        >
+        <label class="mode-option"
+          ><input id="ack-two-clip-saved" type="checkbox" /> I confirm Vids shows the document as
+          saved.</label
+        >
+        <label class="mode-option"
+          ><input id="ack-two-clip-clean-boundary" type="checkbox" /> I confirm there are no
+          transitions or gaps between the clips.</label
+        >
+        <button id="prepare-two-clip-mp4" type="button" disabled>
+          Prepare Two-Clip Whole-Document MP4
+        </button>
+        <p id="two-clip-proof-status" role="status">No two-clip proof started</p>
+      </section>
+
       <section class="results mp4-proof" aria-live="polite" aria-labelledby="mp4-title">
         <h2 id="mp4-title">Separate whole-document MP4 proof</h2>
         <p class="boundary">

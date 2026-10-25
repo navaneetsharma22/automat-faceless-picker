@@ -28,6 +28,13 @@ modify a Vids document or interact with its scenes.
   `canDownload=true`, a supplied matching expected ID, and explicit
   acknowledgement that the whole document contains only the intended clip.
   This is user attestation; scene isolation is not verified by this page.
+- **Prepare Two-Clip Whole-Document MP4** is a separate proof mode requiring
+  the exact expected Vids ID, verified Vids metadata, `canDownload=true`, and
+  user attestations that v1 visibly contains City then YUGVERA, the document
+  shows saved, and there are no transitions or gaps. These statements are not
+  machine-verified. It prepares the whole document once and uses the explicit
+  browser download control. It does not use extension handoff or read, settle,
+  clear, or adopt a pending extension run.
 - MP4 preparation uses Drive `files.download` with `mimeType=video/mp4`, then
   polls the returned operation with `operations.get`. A timeout can continue
   only polling that operation. The final URI is validated and fetched without
@@ -35,6 +42,18 @@ modify a Vids document or interact with its scenes.
   prevent receiving bytes; the page does not bypass them.
 - Results distinguish operation ready, bytes received, browser save initiated,
   and saved-file completion. A webpage cannot verify browser save completion.
+
+## Two-clip proof and local split
+
+Select the exact v1 document and verify its ID, Vids MIME type,
+`canDownload: Yes`, and expected-ID `Match`. Check all three statements in the
+separate two-clip proof panel, prepare once, and use **Open Prepared MP4** for
+the browser-managed download. Inspect the actual MP4 in a local player and
+examine decoded frames around the visible City-to-YUGVERA change. Do not infer
+a 10-second boundary from the 20-second UI total. Record the measured boundary
+from decoded frame timestamps and use it in the splitter manifest. Stop without
+splitting if the actual file does not establish an unambiguous boundary. The
+splitter validates supplied timestamps; it does not identify clip content.
 
 The API key is intentionally absent from these files. Enter the user's
 restricted key into the page at run time. It is used only in memory as the

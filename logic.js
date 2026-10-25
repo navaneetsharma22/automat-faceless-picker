@@ -61,6 +61,21 @@ export function evaluateVidsMetadata(metadata, selectedFileId, expectedFileId) {
   };
 }
 
+export function canPrepareTwoClipProof({ selectedProof, expectedFileId, attestations }) {
+  return Boolean(
+    selectedProof?.status === 'verified' &&
+    selectedProof.mimeType === VIDS_MIME_TYPE &&
+    selectedProof.canDownload === true &&
+    selectedProof.expectedMatch === true &&
+    typeof expectedFileId === 'string' &&
+    expectedFileId.length > 0 &&
+    selectedProof.fileId === expectedFileId &&
+    attestations?.order === true &&
+    attestations?.saved === true &&
+    attestations?.noTransitionsOrGaps === true,
+  );
+}
+
 export function buildFilesDownloadUrl(fileId) {
   if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(fileId)) return undefined;
   const url = new URL(
